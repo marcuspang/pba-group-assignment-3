@@ -492,7 +492,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn reveal_to_commit_test() {
         let input = "PBA Berkeley 2023!";
         let expected = hex::decode("47ab80e805a80033b7e0587ceb5c575d").unwrap();
@@ -500,7 +499,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn post_commitment_test() {
         let rng_seed = 2023;
         let mut pmb = PublicMessageBoard::new(rng_seed);
@@ -516,7 +514,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn post_reveal_test() {
         let rng_seed = 2023;
         let mut pmb = PublicMessageBoard::new(rng_seed);
@@ -532,7 +529,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn check_commitment_test() {
         let rng_seed = 2023;
         let mut pmb = PublicMessageBoard::new(rng_seed);
@@ -552,7 +548,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_play_decode_strings() {
         let rock = "Rock00000000";
         let paper = "Paper00000000";
@@ -572,7 +567,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_play_decode_rejects_properly() {
         let not_at_start = "0Rock0Paper0";
         let wrong_randomness_length = "Paper000";
@@ -583,7 +577,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_progress_game_test_1() {
         let rng_seed = 2023;
         let pmb = PublicMessageBoard::new(rng_seed);
@@ -604,7 +597,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_progress_player_test_2() {
         let rng_seed = 2023;
         let p2_rng_seed = 2024;
@@ -636,7 +628,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_progress_player_test_3() {
         let rng_seed = 2023;
         let p2_rng_seed = 2024;
@@ -669,7 +660,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_progress_player_full_game_test() {
         let rng_seed = 2023;
         let p2_rng_seed = 2024;
@@ -703,7 +693,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_progress_initial_failures_test() {
         let rng_seed = 2023;
         let p2_rng_seed = 2024;
@@ -723,7 +712,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(feature = "optional-tests"), ignore)]
     fn rps_progress_mismatch_failures_test() {
         let rng_seed = 2023;
         let p2_rng_seed = 2024;
