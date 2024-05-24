@@ -198,31 +198,25 @@ pub struct RPSGame {
 impl RPSGame {
     // Return the winner if there is one, or none if it is a tie. Errors if the game state is not
     // terminal, or the committed strings are malformed.
-    pub fn winner(&self) -> Result<Option<PlayerNumber>, ()> {
+    pub fn winner(&self) -> Result<(Option<PlayerNumber>, Option<RPSPlay>), ()> {
         match &self.state {
-            RPSGameState::Completed { reveals } => {
-                let (winner, winning_play) = reveals
-                    .iter()
-                    .map(|reveal| RPSPlay::from_string_with_randomness(reveal))
-                    .collect::<Result<Vec<RPSPlay>, _>>()?
-                    .iter()
-                    .enumerate()
-                    .fold(
-                        (Option::<PlayerNumber>::None, Option::<RPSPlay>::None),
-                        |acc, (index, &curr_play)| match acc {
-                            (Some(player), Some(play)) => {
-                                if curr_play.0 > play.0 {
-                                    (Some(player), Some(curr_play))
-                                } else {
-                                    (Some(player), Some(curr_play))
-                                }
-                            }
-                            (None, None) => (Some(PlayerNumber(index as u8)), Some(curr_play)),
-                            (_, _) => (None, None),
-                        },
-                    );
-                Ok(winner)
-            }
+            RPSGameState::Completed { reveals } => Ok(reveals
+                .iter()
+                .map(|reveal| RPSPlay::from_string_with_randomness(reveal))
+                .collect::<Result<Vec<RPSPlay>, _>>()?
+                .iter()
+                .enumerate()
+                .fold((None, None), |acc, (index, &curr_play)| match acc {
+                    (Some(player), Some(play)) => {
+                        if curr_play.get_value() > play.get_value() {
+                            (Some(player), Some(curr_play))
+                        } else {
+                            (Some(player), Some(curr_play))
+                        }
+                    }
+                    (None, None) => (Some(PlayerNumber(index as u8)), Some(curr_play)),
+                    (_, _) => (None, None),
+                })),
             _ => Err(()),
         }
     }
@@ -244,24 +238,48 @@ impl PlayerNumber {
 
 /// The possible plays in a game of rock paper scissors
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub struct RPSPlay(u8);
+pub struct RPSPlay {
+    cards: [u8; 5],
+}
 
 impl std::fmt::Display for RPSPlay {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(
+            f,
+            "{}",
+            self.cards
+                .iter()
+                .map(|card| card.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        )
     }
 }
 
 impl RPSPlay {
-    pub fn choose_card(nonce: u64) -> Self {
-        Self((nonce % 52) as u8)
+    pub fn draw_cards(nonce: u64) -> Self {
+        let mut rng = SmallRng::seed_from_u64(nonce);
+        let mut cards = [0u8; 5];
+        for card in cards.iter_mut() {
+            *card = rng.gen_range(0..52) as u8;
+        }
+        Self { cards }
     }
 
     /// Convert a string with 4 bytes of hex-encoded randomness at the end into an RPS play
     pub fn from_string_with_randomness(s: &str) -> Result<Self, ()> {
         let (value, randomness) = s.split_at(s.len() - 4 * 2);
-        let value = value.parse::<u8>().map_err(|_| ())?;
-        Ok(Self(value))
+        let value = value
+            .split(",")
+            .map(|s| s.parse::<u8>().unwrap())
+            .collect::<Vec<u8>>();
+        Ok(Self {
+            cards: value.try_into().map_err(|_| ())?,
+        })
+    }
+
+    pub fn get_value(&self) -> u8 {
+        self.cards.iter().sum()
     }
 }
 
@@ -320,7 +338,7 @@ impl<'a> RPSPlayer<'a> {
         // The student starter code is each match arm up to the `todo!()`.
         match game_state.state {
             RPSGameState::NotStarted if self.player_number == PlayerNumber(0) => {
-                let play = RPSPlay::choose_card(self.rng.gen());
+                let play = RPSPlay::draw_cards(self.rng.gen());
                 let (msg_with_randomness, commitment) = self
                     .message_board
                     .borrow_mut()
@@ -341,7 +359,7 @@ impl<'a> RPSPlayer<'a> {
             // TODO: only the next player can progress game
             {
                 if self.player_number == player_number.get_next_player() {
-                    let play = RPSPlay::choose_card(self.rng.gen());
+                    let play = RPSPlay::draw_cards(self.rng.gen());
                     let prev_commitment = commitments.last().ok_or(())?;
                     self.message_board
                         .borrow()
@@ -650,7 +668,7 @@ mod tests {
         // to know what play to expect in a test.
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
-        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
+        let p1_expected_play = RPSPlay::draw_cards(p1_test_rng.gen());
         let (_, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let expected = RPSGameState::PlayerCommitted {
             player_number: PlayerNumber(0),
@@ -680,8 +698,8 @@ mod tests {
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
-        let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
+        let p1_expected_play = RPSPlay::draw_cards(p1_test_rng.gen());
+        let p2_expected_play = RPSPlay::draw_cards(p2_test_rng.gen());
 
         let (_, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let (_, p2_commit) = pmb2.post_commitment(p2_expected_play.to_string());
@@ -720,8 +738,8 @@ mod tests {
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
-        let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
+        let p1_expected_play = RPSPlay::draw_cards(p1_test_rng.gen());
+        let p2_expected_play = RPSPlay::draw_cards(p2_test_rng.gen());
 
         let (p1_reveal, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let (_, p2_commit) = pmb2.post_commitment(p2_expected_play.to_string());
@@ -768,8 +786,8 @@ mod tests {
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
-        let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
+        let p1_expected_play = RPSPlay::draw_cards(p1_test_rng.gen());
+        let p2_expected_play = RPSPlay::draw_cards(p2_test_rng.gen());
 
         let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
         let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
@@ -904,8 +922,8 @@ fn main() {
     let mut pmb2 = PublicMessageBoard::new(rng_seed);
     let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
     let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-    let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
-    let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
+    let p1_expected_play = RPSPlay::draw_cards(p1_test_rng.gen());
+    let p2_expected_play = RPSPlay::draw_cards(p2_test_rng.gen());
 
     let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
     let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
@@ -930,6 +948,6 @@ fn main() {
     let state = p2.progress_game(state).unwrap();
     println!("{:?}", state);
 
-    let winner = state.winner().unwrap();
-    println!("Winner: {:?}", winner);
+    let (winner, winning_play) = state.winner().unwrap();
+    println!("Winner: {:?}, Play: {:?}", winner, winning_play);
 }
