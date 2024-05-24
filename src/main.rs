@@ -209,7 +209,7 @@ impl RPSGame {
                 .fold((None, None), |acc, (index, &curr_play)| match acc {
                     (Some(player), Some(play)) => {
                         if curr_play.get_value() > play.get_value() {
-                            (Some(player), Some(curr_play))
+                            (Some(PlayerNumber(index as u8)), Some(curr_play))
                         } else {
                             (Some(player), Some(curr_play))
                         }
@@ -916,40 +916,40 @@ mod tests {
 }
 
 fn main() {
-    let rng_seed = 2023;
-    let p2_rng_seed = 2024;
-    let pmb = PublicMessageBoard::new(rng_seed);
+    let mut rng_seed = SmallRng::seed_from_u64(123456789);
+    let mut pmb = PublicMessageBoard::new(rng_seed.gen());
     let pmb_refcell = RefCell::new(pmb);
+    let number_of_players = 10;
+    let mut players = (0..number_of_players)
+        .map(|player| RPSPlayer::new(rng_seed.gen(), &pmb_refcell, PlayerNumber(player)))
+        .collect::<Vec<RPSPlayer>>();
+    let mut game_state = RPSGame {
+        state: RPSGameState::NotStarted,
+        player_count: PlayerNumber(number_of_players),
+    };
 
-    // Because SmallRng is not necessarily deterministic across platforms, we need to replicate
-    // the RNG calls in the RPS player and create an identically seeded message board in order
-    // to know what play to expect in a test.
-    let mut pmb2 = PublicMessageBoard::new(rng_seed);
+    for player_index in 0..(number_of_players as usize) {
+        if let Some(player) = players.get_mut(player_index) {
+            player.draw_card();
+            let expected_play = player.reveal_card();
+            // commit
+            pmb_refcell
+                .borrow_mut()
+                .post_commitment(expected_play.to_string());
+            game_state = player.progress_game(game_state).unwrap();
+            println!("Player {} committed. State {:?}", player_index, game_state.state);
+        }
+    }
 
-    let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
-    let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
-    p1.draw_card();
-    p2.draw_card();
-    let p1_expected_play = p1.reveal_card();
-    let p2_expected_play = p2.reveal_card();
+    for player_index in 0..(number_of_players as usize) {
+        if let Some(player) = players.get_mut(player_index) {
+            // reveal
+            game_state = player.progress_game(game_state.clone()).unwrap();
+            println!("Player {} committed. State {:?}", player_index, game_state.state);
+        }
+    }
+    println!("Final State {:?}", game_state.state);
 
-    let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
-    let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
-
-    let state = p1
-        .progress_game(RPSGame {
-            state: RPSGameState::NotStarted,
-            player_count: PlayerNumber(2),
-        })
-        .unwrap();
-    println!("{:?}", state);
-    let state = p2.progress_game(state).unwrap();
-    println!("{:?}", state);
-    let state = p1.progress_game(state).unwrap();
-    println!("{:?}", state);
-    let state = p2.progress_game(state).unwrap();
-    println!("{:?}", state);
-
-    let (winner, winning_play) = state.winner().unwrap();
+    let (winner, winning_play) = game_state.winner().unwrap();
     println!("Winner: {:?}, Play: {:?}", winner, winning_play);
 }
