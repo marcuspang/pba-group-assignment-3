@@ -257,15 +257,6 @@ impl std::fmt::Display for RPSPlay {
 }
 
 impl RPSPlay {
-    pub fn draw_cards(nonce: u64) -> Self {
-        let mut rng = SmallRng::seed_from_u64(nonce);
-        let mut cards = [0u8; 5];
-        for card in cards.iter_mut() {
-            *card = rng.gen_range(0..52) as u8;
-        }
-        Self { cards }
-    }
-
     /// Convert a string with 4 bytes of hex-encoded randomness at the end into an RPS play
     pub fn from_string_with_randomness(s: &str) -> Result<Self, ()> {
         let (value, randomness) = s.split_at(s.len() - 4 * 2);
@@ -278,8 +269,20 @@ impl RPSPlay {
         })
     }
 
+    // TODO: update this according to Poker rules
     pub fn get_value(&self) -> u8 {
         self.cards.iter().sum()
+    }
+
+    pub fn draw_cards(nonce: HashValue) -> Self {
+        let nonce = nonce[..8].try_into().unwrap();
+        let nonce = u64::from_le_bytes(nonce);
+        let mut rng = SmallRng::seed_from_u64(nonce);
+        let mut cards = [0u8; 5];
+        for card in cards.iter_mut() {
+            *card = rng.gen_range(0..52) as u8;
+        }
+        Self { cards }
     }
 }
 
@@ -301,6 +304,8 @@ pub struct RPSPlayer<'a> {
     rng: SmallRng,
 
     keypair: Keypair,
+    vrf: Option<HashValue>,
+    play: Option<RPSPlay>,
 }
 
 impl<'a> RPSPlayer<'a> {
@@ -310,14 +315,27 @@ impl<'a> RPSPlayer<'a> {
         message_board: &'a RefCell<PublicMessageBoard>,
         player_order: PlayerNumber,
     ) -> Self {
-        let rng = SmallRng::seed_from_u64(rng_seed);
         RPSPlayer {
             message_board,
             player_number: player_order,
-            previous_commitment_str: None,
             keypair: Keypair::generate(),
-            rng,
+            previous_commitment_str: None,
+            rng: SmallRng::seed_from_u64(rng_seed),
+            play: None,
+            vrf: None,
         }
+    }
+
+    pub fn draw_card(&mut self) {
+        if self.vrf.is_none() {
+            self.vrf = Some(hash_with_blake(self.keypair.public.to_bytes().as_ref()));
+        }
+    }
+
+    pub fn reveal_card(&mut self) -> RPSPlay {
+        let cards = RPSPlay::draw_cards(self.vrf.unwrap());
+        self.play = Some(cards);
+        cards
     }
 
     /// Make the next play as a careful player in a rock paper scissors game. You should only return
@@ -338,7 +356,7 @@ impl<'a> RPSPlayer<'a> {
         // The student starter code is each match arm up to the `todo!()`.
         match game_state.state {
             RPSGameState::NotStarted if self.player_number == PlayerNumber(0) => {
-                let play = RPSPlay::draw_cards(self.rng.gen());
+                let play = self.play.ok_or(())?;
                 let (msg_with_randomness, commitment) = self
                     .message_board
                     .borrow_mut()
@@ -359,7 +377,7 @@ impl<'a> RPSPlayer<'a> {
             // TODO: only the next player can progress game
             {
                 if self.player_number == player_number.get_next_player() {
-                    let play = RPSPlay::draw_cards(self.rng.gen());
+                    let play = self.play.ok_or(())?;
                     let prev_commitment = commitments.last().ok_or(())?;
                     self.message_board
                         .borrow()
@@ -465,19 +483,6 @@ impl<'a> RPSPlayer<'a> {
             _ => Err(()),
         }
     }
-}
-
-/// This function is not graded. It is just for collecting feedback.
-/// On a scale from 0 - 100, with zero being extremely easy and 100 being extremely hard, how hard
-/// did you find the exercises in this section?
-pub fn how_hard_was_this_section() -> u8 {
-    30
-}
-
-/// This function is not graded. It is just for collecting feedback.
-/// About how much time (in hours) did you spend on the exercises in this section?
-pub fn how_many_hours_did_you_spend_on_this_section() -> f32 {
-    2.0
 }
 
 #[cfg(test)]
@@ -920,20 +925,17 @@ fn main() {
     // the RNG calls in the RPS player and create an identically seeded message board in order
     // to know what play to expect in a test.
     let mut pmb2 = PublicMessageBoard::new(rng_seed);
-    let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
-    let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-    let p1_expected_play = RPSPlay::draw_cards(p1_test_rng.gen());
-    let p2_expected_play = RPSPlay::draw_cards(p2_test_rng.gen());
+
+    let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+    let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
+    p1.draw_card();
+    p2.draw_card();
+    let p1_expected_play = p1.reveal_card();
+    let p2_expected_play = p2.reveal_card();
 
     let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
     let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
 
-    let expected = RPSGameState::Completed {
-        reveals: vec![p1_reveal, p2_reveal],
-    };
-
-    let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
-    let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
     let state = p1
         .progress_game(RPSGame {
             state: RPSGameState::NotStarted,
