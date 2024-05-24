@@ -1,4 +1,5 @@
 use hex::ToHex;
+use schnorrkel::Keypair;
 // You can find the hashing algorithms in the exports from sp_core. In order to easily see what is
 // available from sp_core, it might be helpful to look at the rust docs:
 // https://paritytech.github.io/substrate/master/sp_core/index.html
@@ -225,12 +226,8 @@ impl PlayerNumber {
 }
 
 /// The possible plays in a game of rock paper scissors
-#[derive(Clone, Debug, PartialEq, Eq, EnumIter)]
-pub enum RPSPlay {
-    Rock,
-    Paper,
-    Scissors,
-}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RPSPlay(u8);
 
 impl std::fmt::Display for RPSPlay {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -239,15 +236,8 @@ impl std::fmt::Display for RPSPlay {
 }
 
 impl RPSPlay {
-    /// Convert a string with 4 bytes of hex-encoded randomness at the end into an RPS play
-    pub fn from_string_with_randomness(s: &str) -> Result<Self, ()> {
-        let (value, randomness) = s.split_at(s.len() - 4 * 2);
-        match value {
-            "Scissors" => Ok(Self::Scissors),
-            "Rock" => Ok(Self::Rock),
-            "Paper" => Ok(Self::Paper),
-            _ => Err(()),
-        }
+    pub fn choose_card(nonce: u64) -> Self {
+        Self((nonce % 52) as u8)
     }
 }
 
@@ -267,6 +257,8 @@ pub struct RPSPlayer<'a> {
     ///
     /// STUDENTS: DO NOT USE THIS YOURSELF. The provided code already uses it everywhere necessary.
     rng: SmallRng,
+
+    keypair: Keypair,
 }
 
 impl<'a> RPSPlayer<'a> {
@@ -276,11 +268,13 @@ impl<'a> RPSPlayer<'a> {
         message_board: &'a RefCell<PublicMessageBoard>,
         player_order: PlayerNumber,
     ) -> Self {
+        let rng = SmallRng::seed_from_u64(rng_seed);
         RPSPlayer {
             message_board,
             player_number: player_order,
             previous_commitment_str: None,
-            rng: SmallRng::seed_from_u64(rng_seed),
+            keypair: Keypair::generate(),
+            rng,
         }
     }
 
@@ -302,7 +296,7 @@ impl<'a> RPSPlayer<'a> {
         // The student starter code is each match arm up to the `todo!()`.
         match game_state.state {
             RPSGameState::NotStarted if self.player_number == PlayerNumber(0) => {
-                let play = RPSPlay::iter().choose_stable(&mut self.rng).unwrap();
+                let play = RPSPlay::choose_card(self.rng.gen());
                 let (msg_with_randomness, commitment) = self
                     .message_board
                     .borrow_mut()
@@ -320,7 +314,7 @@ impl<'a> RPSPlayer<'a> {
             // TODO: only the next player can progress game
             {
                 if self.player_number == player_number.get_next_player() {
-                    let play = RPSPlay::iter().choose_stable(&mut self.rng).unwrap();
+                    let play = RPSPlay::choose_card(self.rng.gen());
                     let prev_commitment = commitments.last().ok_or(())?;
                     self.message_board
                         .borrow()
@@ -576,34 +570,34 @@ mod tests {
         assert_eq!(pmb.check_commitment(commit), Ok(Some(message)));
     }
 
-    #[test]
-    fn rps_play_decode_strings() {
-        let rock = "Rock00000000";
-        let paper = "Paper00000000";
-        let scissors = "Scissors00000000";
-        assert_eq!(
-            Ok(RPSPlay::Rock),
-            RPSPlay::from_string_with_randomness(rock)
-        );
-        assert_eq!(
-            Ok(RPSPlay::Paper),
-            RPSPlay::from_string_with_randomness(paper)
-        );
-        assert_eq!(
-            Ok(RPSPlay::Scissors),
-            RPSPlay::from_string_with_randomness(scissors)
-        );
-    }
+    // #[test]
+    // fn rps_play_decode_strings() {
+    //     let rock = "Rock00000000";
+    //     let paper = "Paper00000000";
+    //     let scissors = "Scissors00000000";
+    //     assert_eq!(
+    //         Ok(RPSPlay::Rock),
+    //         RPSPlay::from_string_with_randomness(rock)
+    //     );
+    //     assert_eq!(
+    //         Ok(RPSPlay::Paper),
+    //         RPSPlay::from_string_with_randomness(paper)
+    //     );
+    //     assert_eq!(
+    //         Ok(RPSPlay::Scissors),
+    //         RPSPlay::from_string_with_randomness(scissors)
+    //     );
+    // }
 
-    #[test]
-    fn rps_play_decode_rejects_properly() {
-        let not_at_start = "0Rock0Paper0";
-        let wrong_randomness_length = "Paper000";
-        assert!(RPSPlay::from_string_with_randomness(not_at_start).is_err());
-        assert!(RPSPlay::from_string_with_randomness(wrong_randomness_length).is_err());
+    // #[test]
+    // fn rps_play_decode_rejects_properly() {
+    //     let not_at_start = "0Rock0Paper0";
+    //     let wrong_randomness_length = "Paper000";
+    //     assert!(RPSPlay::from_string_with_randomness(not_at_start).is_err());
+    //     assert!(RPSPlay::from_string_with_randomness(wrong_randomness_length).is_err());
 
-        let pmb = PublicMessageBoard::new(5);
-    }
+    //     let pmb = PublicMessageBoard::new(5);
+    // }
 
     #[test]
     fn rps_progress_game_test_1() {
@@ -616,7 +610,7 @@ mod tests {
         // to know what play to expect in a test.
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
-        let p1_expected_play = RPSPlay::iter().choose_stable(&mut p1_test_rng).unwrap();
+        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
         let (_, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let expected = RPSGameState::PlayerCommitted {
             player_number: PlayerNumber(0),
@@ -646,8 +640,8 @@ mod tests {
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-        let p1_expected_play = RPSPlay::iter().choose_stable(&mut p1_test_rng).unwrap();
-        let p2_expected_play = RPSPlay::iter().choose_stable(&mut p2_test_rng).unwrap();
+        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
+        let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
 
         let (_, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let (_, p2_commit) = pmb2.post_commitment(p2_expected_play.to_string());
@@ -686,8 +680,8 @@ mod tests {
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-        let p1_expected_play = RPSPlay::iter().choose_stable(&mut p1_test_rng).unwrap();
-        let p2_expected_play = RPSPlay::iter().choose_stable(&mut p2_test_rng).unwrap();
+        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
+        let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
 
         let (p1_reveal, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let (_, p2_commit) = pmb2.post_commitment(p2_expected_play.to_string());
@@ -734,8 +728,8 @@ mod tests {
         let mut pmb2 = PublicMessageBoard::new(rng_seed);
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
-        let p1_expected_play = RPSPlay::iter().choose_stable(&mut p1_test_rng).unwrap();
-        let p2_expected_play = RPSPlay::iter().choose_stable(&mut p2_test_rng).unwrap();
+        let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
+        let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
 
         let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
         let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
