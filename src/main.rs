@@ -171,19 +171,26 @@ impl PublicMessageBoard {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RPSGameState {
     NotStarted,
-    Player1Committed(HashValue),
-    BothCommitted {
-        p1_commit: HashValue,
-        p2_commit: HashValue,
+    PlayerCommitted {
+        player_number: PlayerNumber,
+        commitments: Vec<HashValue>,
     },
-    Player1Revealed {
-        p1_reveal: String,
-        p2_commit: HashValue,
+    AllCommitted {
+        commitments: Vec<HashValue>,
+    },
+    PlayerRevealed {
+        player_number: PlayerNumber,
+        reveals: Vec<String>,
+        commitments: Vec<HashValue>,
     },
     Completed {
-        p1_reveal: String,
-        p2_reveal: String,
+        reveals: Vec<String>,
     },
+}
+
+pub struct RPSGame {
+    state: RPSGameState,
+    player_count: PlayerNumber,
 }
 
 impl RPSGameState {
@@ -191,45 +198,30 @@ impl RPSGameState {
     // terminal, or the committed strings are malformed.
     pub fn winner(state: RPSGameState) -> Result<Option<PlayerNumber>, ()> {
         match state {
-            Self::Completed {
-                p1_reveal,
-                p2_reveal,
-            } => {
-                // If one of the players made an invalid play, we automatically say the other player won.
-                // We first do that logic for player 1, because they must have broken the rules of
-                // the game first.
-                let p1_play = match RPSPlay::from_string_with_randomness(&p1_reveal) {
-                    Ok(play) => play,
-                    Err(_) => {
-                        return Ok(Some(PlayerNumber::Second));
-                    }
-                };
-                let p2_play = match RPSPlay::from_string_with_randomness(&p2_reveal) {
-                    Ok(play) => play,
-                    Err(_) => {
-                        return Ok(Some(PlayerNumber::First));
-                    }
-                };
-                match (p1_play, p2_play) {
-                    (RPSPlay::Rock, RPSPlay::Scissors) => Ok(Some(PlayerNumber::First)),
-                    (RPSPlay::Rock, RPSPlay::Paper) => Ok(Some(PlayerNumber::Second)),
-                    (RPSPlay::Paper, RPSPlay::Rock) => Ok(Some(PlayerNumber::First)),
-                    (RPSPlay::Paper, RPSPlay::Scissors) => Ok(Some(PlayerNumber::Second)),
-                    (RPSPlay::Scissors, RPSPlay::Paper) => Ok(Some(PlayerNumber::First)),
-                    (RPSPlay::Scissors, RPSPlay::Rock) => Ok(Some(PlayerNumber::Second)),
-                    _ => Ok(None),
+            Self::Completed { reveals } => {
+                for (index, reveal) in reveals.iter().enumerate() {
+                    // TODO: derive winner from all reveals
+                    return Ok(Some(PlayerNumber(index as u8)));
                 }
+                Err(())
             }
             _ => Err(()),
         }
     }
 }
 
-/// The possible player numbers in rock paper scissors
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PlayerNumber {
-    First,
-    Second,
+/// The possible number of players
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerNumber(u8); // TODO: allow for anyone to start the game?
+
+impl PlayerNumber {
+    pub fn get_next_player(&self) -> PlayerNumber {
+        PlayerNumber(self.0 + 1)
+    }
+
+    pub fn get_first_player() -> PlayerNumber {
+        PlayerNumber(0)
+    }
 }
 
 /// The possible plays in a game of rock paper scissors
@@ -266,14 +258,11 @@ pub struct RPSPlayer<'a> {
     ///
     /// This can be used mutably by using `self.message_board.borrow_mut()`.
     message_board: &'a RefCell<PublicMessageBoard>,
-    /// If this player is playing first or second
+    /// Player index
     player_number: PlayerNumber,
     /// The string used to commit, with included randomness. This will always be the string
     /// representation of an RPSPlay
     previous_commitment_str: Option<String>,
-    /// The commitment made by the other player, once seen. It is important for the player to keep
-    /// this information, because it is not safely tracked in the game state.
-    other_commit: Option<HashValue>,
     /// A seeded RNG used to generate randomness for deciding on a play.
     ///
     /// STUDENTS: DO NOT USE THIS YOURSELF. The provided code already uses it everywhere necessary.
@@ -291,7 +280,6 @@ impl<'a> RPSPlayer<'a> {
             message_board,
             player_number: player_order,
             previous_commitment_str: None,
-            other_commit: None,
             rng: SmallRng::seed_from_u64(rng_seed),
         }
     }
@@ -310,76 +298,117 @@ impl<'a> RPSPlayer<'a> {
     /// - Once a player has seen the other player's commitment, make sure it is consistent
     ///     with any future game states. If it ever fails to be consistent, error.
     /// - DO NOT USE THE RANDOMNESS YOURSELF. This _will_ break automated tests.
-    pub fn progress_game(&mut self, state: RPSGameState) -> Result<RPSGameState, ()> {
+    pub fn progress_game(&mut self, game_state: RPSGame) -> Result<RPSGameState, ()> {
         // The student starter code is each match arm up to the `todo!()`.
-        match state {
-            RPSGameState::NotStarted if self.player_number == PlayerNumber::First => {
+        match game_state.state {
+            RPSGameState::NotStarted if self.player_number == PlayerNumber(0) => {
                 let play = RPSPlay::iter().choose_stable(&mut self.rng).unwrap();
                 let (msg_with_randomness, commitment) = self
                     .message_board
                     .borrow_mut()
                     .post_commitment(play.to_string());
                 self.previous_commitment_str = Some(msg_with_randomness);
-                Ok(RPSGameState::Player1Committed(commitment))
-            }
-            RPSGameState::Player1Committed(p1_commit)
-                if self.player_number == PlayerNumber::Second =>
-            {
-                let play = RPSPlay::iter().choose_stable(&mut self.rng).unwrap();
-                self.message_board.borrow().check_commitment(p1_commit)?;
-                let (msg_with_randomness, p2_commit) = self
-                    .message_board
-                    .borrow_mut()
-                    .post_commitment(play.to_string());
-                self.previous_commitment_str = Some(msg_with_randomness);
-                self.other_commit = Some(p1_commit);
-                Ok(RPSGameState::BothCommitted {
-                    p1_commit,
-                    p2_commit,
+                Ok(RPSGameState::PlayerCommitted {
+                    player_number: self.player_number,
+                    commitments: vec![commitment],
                 })
             }
-            RPSGameState::BothCommitted {
-                p1_commit,
-                p2_commit,
-            } if self.player_number == PlayerNumber::First => {
-                if let Some(p1_reveal) = self.previous_commitment_str.borrow() {
-                    self.message_board.borrow().check_commitment(p2_commit)?;
-                    let p1_commit_value = self
+            RPSGameState::PlayerCommitted {
+                player_number,
+                commitments,
+            } =>
+            // TODO: only the next player can progress game
+            {
+                if self.player_number == player_number.get_next_player() {
+                    let play = RPSPlay::iter().choose_stable(&mut self.rng).unwrap();
+                    let prev_commitment = commitments.last().ok_or(())?;
+                    self.message_board
+                        .borrow()
+                        .check_commitment(*prev_commitment)?;
+                    let (msg_with_randomness, commitment) = self
                         .message_board
                         .borrow_mut()
-                        .post_reveal(p1_reveal.clone())?;
-                    if p1_commit_value != p1_commit {
-                        return Err(());
+                        .post_commitment(play.to_string());
+                    self.previous_commitment_str = Some(msg_with_randomness);
+                    let mut commitments = commitments.clone();
+                    commitments.push(commitment);
+                    if self.player_number.get_next_player() == game_state.player_count {
+                        return Ok(RPSGameState::AllCommitted { commitments });
                     }
-                    return Ok(RPSGameState::Player1Revealed {
-                        p1_reveal: p1_reveal.clone(),
-                        p2_commit,
+                    return Ok(RPSGameState::PlayerCommitted {
+                        player_number: self.player_number,
+                        commitments,
                     });
                 }
                 Err(())
             }
-            RPSGameState::Player1Revealed {
-                p1_reveal: p1,
-                p2_commit: p2,
-            } if self.player_number == PlayerNumber::Second => {
-                if let Some(p1_commit) = self.other_commit {
-                    let p1_reveal_value =
-                        self.message_board.borrow().check_commitment(p1_commit)?;
-                    if let Some(p2_reveal) = self.previous_commitment_str.borrow() {
-                        if p1_reveal_value.is_some_and(|val| val == p1) {
-                            self.message_board
-                                .borrow_mut()
-                                .post_reveal(p2_reveal.clone())?;
-                            return Ok(RPSGameState::Completed {
-                                p1_reveal: p1,
-                                p2_reveal: p2_reveal.clone(),
-                            });
-                        }
+            RPSGameState::AllCommitted { commitments } if self.player_number == PlayerNumber(0) => {
+                if let Some(p1_reveal) = self.previous_commitment_str.borrow() {
+                    for commitment in commitments.clone() {
+                        self.message_board.borrow().check_commitment(commitment)?;
+                    }
+                    let p1_commit_value = self
+                        .message_board
+                        .borrow_mut()
+                        .post_reveal(p1_reveal.clone())?;
+                    let first_commitment = commitments.first().ok_or(())?;
+                    if p1_commit_value != *first_commitment {
                         return Err(());
                     }
-                    return Err(());
+                    return Ok(RPSGameState::PlayerRevealed {
+                        player_number: self.player_number,
+                        reveals: vec![p1_reveal.clone()],
+                        commitments,
+                    });
                 }
                 Err(())
+            }
+            RPSGameState::PlayerRevealed {
+                reveals,
+                commitments,
+                player_number,
+            } => {
+                if self.player_number == player_number.get_next_player() {
+                    // check if all reveals matches with commitment
+                    for (index, current_reveal) in reveals.iter().enumerate() {
+                        let commitment = commitments.get(index).ok_or(())?;
+                        if !self
+                            .message_board
+                            .borrow()
+                            .check_commitment(commitment.clone())?
+                            .is_some_and(|reveal| reveal == *current_reveal)
+                        {
+                            return Err(());
+                        }
+                    }
+
+                    let mut reveals = reveals;
+                    if let Some(commitment) = self.previous_commitment_str.borrow() {
+                        // TODO: only the next player can progress game
+                        // method already checks if commitment exists
+                        let commitment_hash = self
+                            .message_board
+                            .borrow_mut()
+                            .post_reveal(commitment.to_string())?;
+                        let reveal = self
+                            .message_board
+                            .borrow()
+                            .check_commitment(commitment_hash)?
+                            .ok_or(())?;
+                        if reveal == *reveal {
+                            reveals.push(reveal);
+                            if self.player_number.get_next_player() == game_state.player_count {
+                                return Ok(RPSGameState::Completed { reveals });
+                            }
+                            return Ok(RPSGameState::PlayerRevealed {
+                                player_number: self.player_number,
+                                reveals,
+                                commitments,
+                            });
+                        }
+                    }
+                }
+                return Err(());
             }
             _ => Err(()),
         }
@@ -589,10 +618,18 @@ mod tests {
         let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
         let p1_expected_play = RPSPlay::iter().choose_stable(&mut p1_test_rng).unwrap();
         let (_, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
-        let expected = RPSGameState::Player1Committed(p1_commit);
+        let expected = RPSGameState::PlayerCommitted {
+            player_number: PlayerNumber(0),
+            commitments: vec![p1_commit],
+        };
 
-        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber::First);
-        let state2 = p1.progress_game(RPSGameState::NotStarted).unwrap();
+        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+        let state2 = p1
+            .progress_game(RPSGame {
+                state: RPSGameState::NotStarted,
+                player_count: PlayerNumber(1),
+            })
+            .unwrap();
         assert_eq!(expected, state2);
     }
 
@@ -615,15 +652,24 @@ mod tests {
         let (_, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let (_, p2_commit) = pmb2.post_commitment(p2_expected_play.to_string());
 
-        let expected = RPSGameState::BothCommitted {
-            p1_commit,
-            p2_commit,
+        let expected = RPSGameState::AllCommitted {
+            commitments: vec![p1_commit, p2_commit],
         };
 
-        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber::First);
-        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber::Second);
-        let state2 = p1.progress_game(RPSGameState::NotStarted).unwrap();
-        let state3 = p2.progress_game(state2).unwrap();
+        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
+        let state2 = p1
+            .progress_game(RPSGame {
+                state: RPSGameState::NotStarted,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state3 = p2
+            .progress_game(RPSGame {
+                state: state2,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
         assert_eq!(expected, state3);
     }
 
@@ -643,19 +689,35 @@ mod tests {
         let p1_expected_play = RPSPlay::iter().choose_stable(&mut p1_test_rng).unwrap();
         let p2_expected_play = RPSPlay::iter().choose_stable(&mut p2_test_rng).unwrap();
 
-        let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
+        let (p1_reveal, p1_commit) = pmb2.post_commitment(p1_expected_play.to_string());
         let (_, p2_commit) = pmb2.post_commitment(p2_expected_play.to_string());
 
-        let expected = RPSGameState::Player1Revealed {
-            p1_reveal,
-            p2_commit,
+        let expected = RPSGameState::PlayerRevealed {
+            reveals: vec![p1_reveal],
+            commitments: vec![p1_commit, p2_commit],
+            player_number: PlayerNumber(0),
         };
 
-        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber::First);
-        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber::Second);
-        let state2 = p1.progress_game(RPSGameState::NotStarted).unwrap();
-        let state3 = p2.progress_game(state2).unwrap();
-        let state4 = p1.progress_game(state3).unwrap();
+        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
+        let state2 = p1
+            .progress_game(RPSGame {
+                state: RPSGameState::NotStarted,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state3 = p2
+            .progress_game(RPSGame {
+                state: state2,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state4 = p1
+            .progress_game(RPSGame {
+                state: state3,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
         assert_eq!(expected, state4);
     }
 
@@ -679,16 +741,35 @@ mod tests {
         let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
 
         let expected = RPSGameState::Completed {
-            p1_reveal,
-            p2_reveal,
+            reveals: vec![p1_reveal, p2_reveal],
         };
 
-        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber::First);
-        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber::Second);
-        let state2 = p1.progress_game(RPSGameState::NotStarted).unwrap();
-        let state3 = p2.progress_game(state2).unwrap();
-        let state4 = p1.progress_game(state3).unwrap();
-        let state5 = p2.progress_game(state4).unwrap();
+        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
+        let state2 = p1
+            .progress_game(RPSGame {
+                state: RPSGameState::NotStarted,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state3 = p2
+            .progress_game(RPSGame {
+                state: state2,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state4 = p1
+            .progress_game(RPSGame {
+                state: state3,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state5 = p2
+            .progress_game(RPSGame {
+                state: state4,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
         assert_eq!(expected, state5);
     }
 
@@ -698,17 +779,28 @@ mod tests {
         let p2_rng_seed = 2024;
         let pmb = PublicMessageBoard::new(rng_seed);
         let pmb_refcell = RefCell::new(pmb);
-        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber::Second);
+        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
 
         // This test only covers some of the possible ways this could fail, so make sure to test on
         // your own!
 
         // p1's listed commit isn't on the message board!
         assert!(p2
-            .progress_game(RPSGameState::Player1Committed([5u8; HASH_SIZE]))
+            .progress_game(RPSGame {
+                state: RPSGameState::PlayerCommitted {
+                    player_number: PlayerNumber(1),
+                    commitments: vec![[5u8; HASH_SIZE]]
+                },
+                player_count: PlayerNumber(2)
+            })
             .is_err());
         // p1 has to start the game
-        assert!(p2.progress_game(RPSGameState::NotStarted).is_err());
+        assert!(p2
+            .progress_game(RPSGame {
+                state: RPSGameState::NotStarted,
+                player_count: PlayerNumber(2)
+            })
+            .is_err());
     }
 
     #[test]
@@ -717,34 +809,53 @@ mod tests {
         let p2_rng_seed = 2024;
         let pmb = PublicMessageBoard::new(rng_seed);
         let pmb_refcell = RefCell::new(pmb);
-        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber::First);
-        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber::Second);
+        let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+        let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
 
         // This test only covers some of the possible ways this could fail, so make sure to test on
         // your own!
 
-        let state2 = p1.progress_game(RPSGameState::NotStarted).unwrap();
-        let state3 = p2.progress_game(state2).unwrap();
+        let state2 = p1
+            .progress_game(RPSGame {
+                state: RPSGameState::NotStarted,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
+        let state3 = p2
+            .progress_game(RPSGame {
+                state: state2,
+                player_count: PlayerNumber(2),
+            })
+            .unwrap();
         let (p1_commit, p2_commit) = match state3.clone() {
-            RPSGameState::BothCommitted {
-                p1_commit,
-                p2_commit,
-            } => (p1_commit, p2_commit),
+            RPSGameState::AllCommitted { commitments } => (commitments[0], commitments[1]),
             _ => panic!("state3 should be both committed"),
         };
 
         // P1's previous commit doesn't match p1's current commit
-        let bad_state3 = RPSGameState::BothCommitted {
-            p1_commit: [5u8; HASH_SIZE],
-            p2_commit: p2_commit.clone(),
+        let bad_state3 = RPSGameState::AllCommitted {
+            commitments: vec![[5u8; HASH_SIZE], p2_commit],
         };
-        assert!(p1.progress_game(bad_state3).is_err());
+        assert!(p1
+            .progress_game(RPSGame {
+                state: bad_state3,
+                player_count: PlayerNumber(2)
+            })
+            .is_err());
 
         // P1's reveal doesn't match up with their previous commit
-        let bad_state4 = RPSGameState::Player1Revealed {
-            p1_reveal: "Paper12121212".to_string(),
-            p2_commit,
+        let bad_state4 = RPSGameState::PlayerRevealed {
+            reveals: vec!["Paper12121212".to_string()],
+            commitments: vec![p1_commit, p2_commit],
+            player_number: PlayerNumber(0),
         };
-        assert!(p2.progress_game(bad_state4).is_err());
+        assert!(p2
+            .progress_game(RPSGame {
+                state: bad_state4,
+                player_count: PlayerNumber(2)
+            })
+            .is_err());
     }
 }
+
+fn main() {}
