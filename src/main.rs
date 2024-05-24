@@ -1,5 +1,9 @@
 use hex::ToHex;
-use schnorrkel::Keypair;
+use schnorrkel::{
+    signing_context,
+    vrf::{VRFInOut, VRFProof},
+    Keypair,
+};
 // You can find the hashing algorithms in the exports from sp_core. In order to easily see what is
 // available from sp_core, it might be helpful to look at the rust docs:
 // https://paritytech.github.io/substrate/master/sp_core/index.html
@@ -206,15 +210,15 @@ impl RPSGame {
                 .collect::<Result<Vec<RPSPlay>, _>>()?
                 .iter()
                 .enumerate()
-                .fold((None, None), |acc, (index, &curr_play)| match acc {
+                .fold((None, None), |acc, (index, curr_play)| match acc {
                     (Some(player), Some(play)) => {
                         if curr_play.get_value() > play.get_value() {
-                            (Some(PlayerNumber(index as u8)), Some(curr_play))
+                            (Some(PlayerNumber(index as u8)), Some(curr_play.clone()))
                         } else {
-                            (Some(player), Some(curr_play))
+                            (Some(player), Some(curr_play.clone()))
                         }
                     }
-                    (None, None) => (Some(PlayerNumber(index as u8)), Some(curr_play)),
+                    (None, None) => (Some(PlayerNumber(index as u8)), Some(curr_play.clone())),
                     (_, _) => (None, None),
                 })),
             _ => Err(()),
@@ -237,9 +241,9 @@ impl PlayerNumber {
 }
 
 /// The possible plays in a game of rock paper scissors
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RPSPlay {
-    cards: [u8; 5],
+    cards: Vec<u8>,
 }
 
 impl std::fmt::Display for RPSPlay {
@@ -278,9 +282,9 @@ impl RPSPlay {
         let nonce = nonce[..8].try_into().unwrap();
         let nonce = u64::from_le_bytes(nonce);
         let mut rng = SmallRng::seed_from_u64(nonce);
-        let mut cards = [0u8; 5];
-        for card in cards.iter_mut() {
-            *card = rng.gen_range(0..52) as u8;
+        let mut cards = Vec::with_capacity(5);
+        for i in 0..5 {
+            cards.push(rng.gen_range(0..52) as u8);
         }
         Self { cards }
     }
@@ -304,7 +308,8 @@ pub struct RPSPlayer<'a> {
     rng: SmallRng,
 
     keypair: Keypair,
-    vrf: Option<HashValue>,
+    vrf_proof: Option<VRFProof>,
+    vrf_in_out: Option<VRFInOut>,
     play: Option<RPSPlay>,
 }
 
@@ -322,20 +327,50 @@ impl<'a> RPSPlayer<'a> {
             previous_commitment_str: None,
             rng: SmallRng::seed_from_u64(rng_seed),
             play: None,
-            vrf: None,
+            vrf_proof: None,
+            vrf_in_out: None,
         }
     }
 
-    pub fn draw_card(&mut self) {
-        if self.vrf.is_none() {
-            self.vrf = Some(hash_with_blake(self.keypair.public.to_bytes().as_ref()));
-        }
+    pub fn draw_card(&mut self, input: &[u8]) {
+        let (vrf_in_out, vrf_proof, _) =
+            self.keypair.vrf_sign(signing_context(CONTEXT).bytes(input));
+        self.vrf_in_out = Some(vrf_in_out);
+        self.vrf_proof = Some(vrf_proof);
     }
 
-    pub fn reveal_card(&mut self) -> RPSPlay {
-        let cards = RPSPlay::draw_cards(self.vrf.unwrap());
-        self.play = Some(cards);
-        cards
+    pub fn reveal_card(&mut self) {
+        let in_out = self.vrf_in_out.as_ref().unwrap();
+        let hash = in_out.output.to_bytes();
+        let card = (u64::from_le_bytes(hash[..8].try_into().unwrap()) % 52) as u8;
+        self.play = match &self.play {
+            None => Some(RPSPlay { cards: vec![card] }),
+            Some(RPSPlay { cards }) => {
+                let mut cards = cards.clone();
+                cards.push(card);
+                Some(RPSPlay { cards })
+            }
+        };
+    }
+
+    pub fn verify_card(&self, input: &[u8]) -> bool {
+        self.vrf_proof
+            .as_ref()
+            .and_then(|proof| {
+                self.vrf_in_out.as_ref().and_then(|vrf_in_out| {
+                    Some(
+                        self.keypair
+                            .public
+                            .vrf_verify(
+                                signing_context(CONTEXT).bytes(input),
+                                &vrf_in_out.to_preout(),
+                                proof,
+                            )
+                            .is_ok(),
+                    )
+                })
+            })
+            .unwrap_or(false)
     }
 
     /// Make the next play as a careful player in a rock paper scissors game. You should only return
@@ -356,7 +391,7 @@ impl<'a> RPSPlayer<'a> {
         // The student starter code is each match arm up to the `todo!()`.
         match game_state.state {
             RPSGameState::NotStarted if self.player_number == PlayerNumber(0) => {
-                let play = self.play.ok_or(())?;
+                let play = self.play.as_ref().ok_or(())?;
                 let (msg_with_randomness, commitment) = self
                     .message_board
                     .borrow_mut()
@@ -377,7 +412,7 @@ impl<'a> RPSPlayer<'a> {
             // TODO: only the next player can progress game
             {
                 if self.player_number == player_number.get_next_player() {
-                    let play = self.play.ok_or(())?;
+                    let play = self.play.as_ref().ok_or(())?;
                     let prev_commitment = commitments.last().ok_or(())?;
                     self.message_board
                         .borrow()
@@ -487,10 +522,12 @@ impl<'a> RPSPlayer<'a> {
 
 const INITIAL_SEED: u64 = 123456789;
 const NUMBER_OF_PLAYERS: u8 = 10;
+const NUMBER_OF_ROUNDS: u8 = 5;
+const CONTEXT: &[u8] = b"RPSGame";
 
 fn main() {
     let mut rng_seed = SmallRng::seed_from_u64(INITIAL_SEED);
-    let mut pmb = PublicMessageBoard::new(rng_seed.gen());
+    let pmb = PublicMessageBoard::new(rng_seed.gen());
     let pmb_refcell = RefCell::new(pmb);
     let mut players = (0..NUMBER_OF_PLAYERS)
         .map(|player| RPSPlayer::new(rng_seed.gen(), &pmb_refcell, PlayerNumber(player)))
@@ -499,11 +536,19 @@ fn main() {
         state: RPSGameState::NotStarted,
         player_count: PlayerNumber(NUMBER_OF_PLAYERS),
     };
-
+    for round in 0..NUMBER_OF_ROUNDS {
+        let input = vec!["Round ", &round.to_string(), " Start!"].concat();
+        let input = input.as_bytes();
+        for player_index in 0..(NUMBER_OF_PLAYERS as usize) {
+            if let Some(player) = players.get_mut(player_index) {
+                player.draw_card(input);
+                player.reveal_card();
+            }
+        }
+    }
     for player_index in 0..(NUMBER_OF_PLAYERS as usize) {
         if let Some(player) = players.get_mut(player_index) {
-            player.draw_card();
-            let expected_play = player.reveal_card();
+            let expected_play = player.play.as_ref().unwrap();
             // commit
             pmb_refcell
                 .borrow_mut()
