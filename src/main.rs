@@ -485,6 +485,53 @@ impl<'a> RPSPlayer<'a> {
     }
 }
 
+const INITIAL_SEED: u64 = 123456789;
+const NUMBER_OF_PLAYERS: u8 = 10;
+
+fn main() {
+    let mut rng_seed = SmallRng::seed_from_u64(INITIAL_SEED);
+    let mut pmb = PublicMessageBoard::new(rng_seed.gen());
+    let pmb_refcell = RefCell::new(pmb);
+    let mut players = (0..NUMBER_OF_PLAYERS)
+        .map(|player| RPSPlayer::new(rng_seed.gen(), &pmb_refcell, PlayerNumber(player)))
+        .collect::<Vec<RPSPlayer>>();
+    let mut game_state = RPSGame {
+        state: RPSGameState::NotStarted,
+        player_count: PlayerNumber(NUMBER_OF_PLAYERS),
+    };
+
+    for player_index in 0..(NUMBER_OF_PLAYERS as usize) {
+        if let Some(player) = players.get_mut(player_index) {
+            player.draw_card();
+            let expected_play = player.reveal_card();
+            // commit
+            pmb_refcell
+                .borrow_mut()
+                .post_commitment(expected_play.to_string());
+            game_state = player.progress_game(game_state).unwrap();
+            println!(
+                "Player {} committed. State {:?}",
+                player_index, game_state.state
+            );
+        }
+    }
+
+    for player_index in 0..(NUMBER_OF_PLAYERS as usize) {
+        if let Some(player) = players.get_mut(player_index) {
+            // reveal
+            game_state = player.progress_game(game_state.clone()).unwrap();
+            println!(
+                "Player {} committed. State {:?}",
+                player_index, game_state.state
+            );
+        }
+    }
+    println!("Final State {:?}", game_state.state);
+
+    let (winner, winning_play) = game_state.winner().unwrap();
+    println!("Winner: {:?}, Play: {:?}", winner, winning_play);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,43 +960,4 @@ mod tests {
             })
             .is_err());
     }
-}
-
-fn main() {
-    let mut rng_seed = SmallRng::seed_from_u64(123456789);
-    let mut pmb = PublicMessageBoard::new(rng_seed.gen());
-    let pmb_refcell = RefCell::new(pmb);
-    let number_of_players = 10;
-    let mut players = (0..number_of_players)
-        .map(|player| RPSPlayer::new(rng_seed.gen(), &pmb_refcell, PlayerNumber(player)))
-        .collect::<Vec<RPSPlayer>>();
-    let mut game_state = RPSGame {
-        state: RPSGameState::NotStarted,
-        player_count: PlayerNumber(number_of_players),
-    };
-
-    for player_index in 0..(number_of_players as usize) {
-        if let Some(player) = players.get_mut(player_index) {
-            player.draw_card();
-            let expected_play = player.reveal_card();
-            // commit
-            pmb_refcell
-                .borrow_mut()
-                .post_commitment(expected_play.to_string());
-            game_state = player.progress_game(game_state).unwrap();
-            println!("Player {} committed. State {:?}", player_index, game_state.state);
-        }
-    }
-
-    for player_index in 0..(number_of_players as usize) {
-        if let Some(player) = players.get_mut(player_index) {
-            // reveal
-            game_state = player.progress_game(game_state.clone()).unwrap();
-            println!("Player {} committed. State {:?}", player_index, game_state.state);
-        }
-    }
-    println!("Final State {:?}", game_state.state);
-
-    let (winner, winning_play) = game_state.winner().unwrap();
-    println!("Winner: {:?}, Play: {:?}", winner, winning_play);
 }

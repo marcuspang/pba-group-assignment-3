@@ -1,8 +1,24 @@
-# High-level Approach
+# Overview
 
-1. generate `N` keypairs, 1 for each user
-2. request user to pick a card + random input to generate VRF
-3. user commits (card, random input)
-4. keep track of chosen cards and derive winner
-   - sum of all card values
-5. reveal all commitments + log all card & respective VRF & public key for other users to validate
+This is a simplified Poker game, where the winner is decided from the largest sum of their card. Each card has a value in `[0, 51]`.
+
+The game is simulated with arbitrary number of players, in a state machine fashion.
+
+0. game runs like a state machine from the one in the assignment
+1. each player starts by drawing cards (here, we initialize some VRF and store it with the user)
+2. then, each player reveals their card
+3. once every player has revealed their card, we evaluate all the revealed cards and determine the winner (currently the algorithm sums all the cards)
+
+## Running the game
+
+To run the game, run the following command
+
+```bash
+cargo run
+```
+
+To run the unit tests, run the following command
+
+```bash
+cargo test
+```
