@@ -189,6 +189,7 @@ pub enum RPSGameState {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RPSGame {
     state: RPSGameState,
     player_count: PlayerNumber,
@@ -200,13 +201,27 @@ impl RPSGame {
     pub fn winner(&self) -> Result<Option<PlayerNumber>, ()> {
         match &self.state {
             RPSGameState::Completed { reveals } => {
-                println!("reveals: {:?}", reveals);
-                for (index, reveal) in reveals.iter().enumerate() {
-                    // TODO: derive winner from all reveals
-                    // return Ok(Some(PlayerNumber(index as u8)));
-                }
-                Ok(None)
-                // Err(())
+                let (winner, winning_play) = reveals
+                    .iter()
+                    .map(|reveal| RPSPlay::from_string_with_randomness(reveal))
+                    .collect::<Result<Vec<RPSPlay>, _>>()?
+                    .iter()
+                    .enumerate()
+                    .fold(
+                        (Option::<PlayerNumber>::None, Option::<RPSPlay>::None),
+                        |acc, (index, &curr_play)| match acc {
+                            (Some(player), Some(play)) => {
+                                if curr_play.0 > play.0 {
+                                    (Some(player), Some(curr_play))
+                                } else {
+                                    (Some(player), Some(curr_play))
+                                }
+                            }
+                            (None, None) => (Some(PlayerNumber(index as u8)), Some(curr_play)),
+                            (_, _) => (None, None),
+                        },
+                    );
+                Ok(winner)
             }
             _ => Err(()),
         }
@@ -222,24 +237,31 @@ impl PlayerNumber {
         PlayerNumber(self.0 + 1)
     }
 
-    pub fn get_first_player() -> PlayerNumber {
-        PlayerNumber(0)
+    pub fn is_first_player(&self) -> bool {
+        self.0 == 0
     }
 }
 
 /// The possible plays in a game of rock paper scissors
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct RPSPlay(u8);
 
 impl std::fmt::Display for RPSPlay {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{}", self.0)
     }
 }
 
 impl RPSPlay {
     pub fn choose_card(nonce: u64) -> Self {
         Self((nonce % 52) as u8)
+    }
+
+    /// Convert a string with 4 bytes of hex-encoded randomness at the end into an RPS play
+    pub fn from_string_with_randomness(s: &str) -> Result<Self, ()> {
+        let (value, randomness) = s.split_at(s.len() - 4 * 2);
+        let value = value.parse::<u8>().map_err(|_| ())?;
+        Ok(Self(value))
     }
 }
 
@@ -347,17 +369,17 @@ impl<'a> RPSPlayer<'a> {
                 }
                 Err(())
             }
-            RPSGameState::AllCommitted { commitments } if self.player_number == PlayerNumber(0) => {
+            RPSGameState::AllCommitted { commitments } if self.player_number.is_first_player() => {
                 if let Some(p1_reveal) = self.previous_commitment_str.borrow() {
                     for commitment in commitments.clone() {
                         self.message_board.borrow().check_commitment(commitment)?;
                     }
-                    let p1_commit_value = self
+                    let commitment_hash = self
                         .message_board
                         .borrow_mut()
                         .post_reveal(p1_reveal.clone())?;
                     let first_commitment = commitments.first().ok_or(())?;
-                    if p1_commit_value != *first_commitment {
+                    if commitment_hash != *first_commitment {
                         return Err(());
                     }
                     return Ok(RPSGame {
@@ -398,28 +420,26 @@ impl<'a> RPSPlayer<'a> {
                             .message_board
                             .borrow_mut()
                             .post_reveal(commitment.to_string())?;
-                        let reveal = self
+                        let actual_reveal = self
                             .message_board
                             .borrow()
                             .check_commitment(commitment_hash)?
                             .ok_or(())?;
-                        if reveal == *reveal {
-                            reveals.push(reveal);
-                            if self.player_number.get_next_player() == game_state.player_count {
-                                return Ok(RPSGame {
-                                    player_count: game_state.player_count,
-                                    state: RPSGameState::Completed { reveals },
-                                });
-                            }
+                        reveals.push(actual_reveal);
+                        if self.player_number.get_next_player() == game_state.player_count {
                             return Ok(RPSGame {
                                 player_count: game_state.player_count,
-                                state: RPSGameState::PlayerRevealed {
-                                    player_number: self.player_number,
-                                    reveals,
-                                    commitments,
-                                },
+                                state: RPSGameState::Completed { reveals },
                             });
                         }
+                        return Ok(RPSGame {
+                            player_count: game_state.player_count,
+                            state: RPSGameState::PlayerRevealed {
+                                player_number: self.player_number,
+                                reveals,
+                                commitments,
+                            },
+                        });
                     }
                 }
                 return Err(());
@@ -896,16 +916,20 @@ fn main() {
 
     let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
     let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
-    let state2 = p1
+    let state = p1
         .progress_game(RPSGame {
             state: RPSGameState::NotStarted,
             player_count: PlayerNumber(2),
         })
         .unwrap();
-    let state3 = p2.progress_game(state2).unwrap();
-    let state4 = p1.progress_game(state3).unwrap();
-    let state5 = p2.progress_game(state4).unwrap();
+    println!("{:?}", state);
+    let state = p2.progress_game(state).unwrap();
+    println!("{:?}", state);
+    let state = p1.progress_game(state).unwrap();
+    println!("{:?}", state);
+    let state = p2.progress_game(state).unwrap();
+    println!("{:?}", state);
 
-    let winner = state5.winner().unwrap();
+    let winner = state.winner().unwrap();
     println!("Winner: {:?}", winner);
 }
