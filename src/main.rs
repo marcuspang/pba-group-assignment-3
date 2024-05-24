@@ -194,17 +194,19 @@ pub struct RPSGame {
     player_count: PlayerNumber,
 }
 
-impl RPSGameState {
+impl RPSGame {
     // Return the winner if there is one, or none if it is a tie. Errors if the game state is not
     // terminal, or the committed strings are malformed.
-    pub fn winner(state: RPSGameState) -> Result<Option<PlayerNumber>, ()> {
-        match state {
-            Self::Completed { reveals } => {
+    pub fn winner(&self) -> Result<Option<PlayerNumber>, ()> {
+        match &self.state {
+            RPSGameState::Completed { reveals } => {
+                println!("reveals: {:?}", reveals);
                 for (index, reveal) in reveals.iter().enumerate() {
                     // TODO: derive winner from all reveals
-                    return Ok(Some(PlayerNumber(index as u8)));
+                    // return Ok(Some(PlayerNumber(index as u8)));
                 }
-                Err(())
+                Ok(None)
+                // Err(())
             }
             _ => Err(()),
         }
@@ -292,7 +294,7 @@ impl<'a> RPSPlayer<'a> {
     /// - Once a player has seen the other player's commitment, make sure it is consistent
     ///     with any future game states. If it ever fails to be consistent, error.
     /// - DO NOT USE THE RANDOMNESS YOURSELF. This _will_ break automated tests.
-    pub fn progress_game(&mut self, game_state: RPSGame) -> Result<RPSGameState, ()> {
+    pub fn progress_game(&mut self, game_state: RPSGame) -> Result<RPSGame, ()> {
         // The student starter code is each match arm up to the `todo!()`.
         match game_state.state {
             RPSGameState::NotStarted if self.player_number == PlayerNumber(0) => {
@@ -302,9 +304,12 @@ impl<'a> RPSPlayer<'a> {
                     .borrow_mut()
                     .post_commitment(play.to_string());
                 self.previous_commitment_str = Some(msg_with_randomness);
-                Ok(RPSGameState::PlayerCommitted {
-                    player_number: self.player_number,
-                    commitments: vec![commitment],
+                Ok(RPSGame {
+                    player_count: game_state.player_count,
+                    state: RPSGameState::PlayerCommitted {
+                        player_number: self.player_number,
+                        commitments: vec![commitment],
+                    },
                 })
             }
             RPSGameState::PlayerCommitted {
@@ -327,11 +332,17 @@ impl<'a> RPSPlayer<'a> {
                     let mut commitments = commitments.clone();
                     commitments.push(commitment);
                     if self.player_number.get_next_player() == game_state.player_count {
-                        return Ok(RPSGameState::AllCommitted { commitments });
+                        return Ok(RPSGame {
+                            player_count: game_state.player_count,
+                            state: RPSGameState::AllCommitted { commitments },
+                        });
                     }
-                    return Ok(RPSGameState::PlayerCommitted {
-                        player_number: self.player_number,
-                        commitments,
+                    return Ok(RPSGame {
+                        player_count: game_state.player_count,
+                        state: RPSGameState::PlayerCommitted {
+                            player_number: self.player_number,
+                            commitments,
+                        },
                     });
                 }
                 Err(())
@@ -349,10 +360,13 @@ impl<'a> RPSPlayer<'a> {
                     if p1_commit_value != *first_commitment {
                         return Err(());
                     }
-                    return Ok(RPSGameState::PlayerRevealed {
-                        player_number: self.player_number,
-                        reveals: vec![p1_reveal.clone()],
-                        commitments,
+                    return Ok(RPSGame {
+                        player_count: game_state.player_count,
+                        state: RPSGameState::PlayerRevealed {
+                            player_number: self.player_number,
+                            reveals: vec![p1_reveal.clone()],
+                            commitments,
+                        },
                     });
                 }
                 Err(())
@@ -392,12 +406,18 @@ impl<'a> RPSPlayer<'a> {
                         if reveal == *reveal {
                             reveals.push(reveal);
                             if self.player_number.get_next_player() == game_state.player_count {
-                                return Ok(RPSGameState::Completed { reveals });
+                                return Ok(RPSGame {
+                                    player_count: game_state.player_count,
+                                    state: RPSGameState::Completed { reveals },
+                                });
                             }
-                            return Ok(RPSGameState::PlayerRevealed {
-                                player_number: self.player_number,
-                                reveals,
-                                commitments,
+                            return Ok(RPSGame {
+                                player_count: game_state.player_count,
+                                state: RPSGameState::PlayerRevealed {
+                                    player_number: self.player_number,
+                                    reveals,
+                                    commitments,
+                                },
                             });
                         }
                     }
@@ -624,7 +644,7 @@ mod tests {
                 player_count: PlayerNumber(1),
             })
             .unwrap();
-        assert_eq!(expected, state2);
+        assert_eq!(expected, state2.state);
     }
 
     #[test]
@@ -852,4 +872,40 @@ mod tests {
     }
 }
 
-fn main() {}
+fn main() {
+    let rng_seed = 2023;
+    let p2_rng_seed = 2024;
+    let pmb = PublicMessageBoard::new(rng_seed);
+    let pmb_refcell = RefCell::new(pmb);
+
+    // Because SmallRng is not necessarily deterministic across platforms, we need to replicate
+    // the RNG calls in the RPS player and create an identically seeded message board in order
+    // to know what play to expect in a test.
+    let mut pmb2 = PublicMessageBoard::new(rng_seed);
+    let mut p1_test_rng = SmallRng::seed_from_u64(rng_seed);
+    let mut p2_test_rng = SmallRng::seed_from_u64(p2_rng_seed);
+    let p1_expected_play = RPSPlay::choose_card(p1_test_rng.gen());
+    let p2_expected_play = RPSPlay::choose_card(p2_test_rng.gen());
+
+    let (p1_reveal, _) = pmb2.post_commitment(p1_expected_play.to_string());
+    let (p2_reveal, _) = pmb2.post_commitment(p2_expected_play.to_string());
+
+    let expected = RPSGameState::Completed {
+        reveals: vec![p1_reveal, p2_reveal],
+    };
+
+    let mut p1 = RPSPlayer::new(rng_seed, &pmb_refcell, PlayerNumber(0));
+    let mut p2 = RPSPlayer::new(p2_rng_seed, &pmb_refcell, PlayerNumber(1));
+    let state2 = p1
+        .progress_game(RPSGame {
+            state: RPSGameState::NotStarted,
+            player_count: PlayerNumber(2),
+        })
+        .unwrap();
+    let state3 = p2.progress_game(state2).unwrap();
+    let state4 = p1.progress_game(state3).unwrap();
+    let state5 = p2.progress_game(state4).unwrap();
+
+    let winner = state5.winner().unwrap();
+    println!("Winner: {:?}", winner);
+}
